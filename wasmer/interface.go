@@ -19,10 +19,25 @@ type InstanceHandler interface {
 	IsFunctionImported(name string) bool
 }
 
-// MemoryHandler defines the functionality of the memory of a Wasmer instance
+// MemoryHandler defines the functionality of the memory of a Wasmer instance.
+//
+// Data() is preserved for API compatibility but DEPRECATED — see
+// issues/ISSUE-012. Production callers must use ReadMemory / WriteMemory
+// which encapsulate the bounds-check + defensive-copy pattern and never
+// expose the wasm-linear-memory alias to client code (so a slice held
+// across a memory.Grow can never produce a UAF).
 type MemoryHandler interface {
 	Length() uint32
+	// Deprecated: use ReadMemory or WriteMemory. See issues/ISSUE-012.
 	Data() []byte
+	// ReadMemory returns a defensive copy of the requested wasm memory
+	// range. The returned slice is owned by Go and remains valid across
+	// subsequent Grow calls.
+	ReadMemory(offset uint32, length uint32) ([]byte, error)
+	// WriteMemory copies `data` into wasm memory starting at `offset`.
+	// Returns an error if the range doesn't fit in the current memory
+	// size (does NOT auto-grow — the caller decides growth policy).
+	WriteMemory(offset uint32, data []byte) error
 	Grow(pages uint32) error
 	Destroy()
 }

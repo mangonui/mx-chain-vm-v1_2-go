@@ -2,8 +2,8 @@ package vmhost
 
 import (
 	"fmt"
-	"io/ioutil"
 	"math/big"
+	"os"
 	"path/filepath"
 	"unsafe"
 
@@ -87,9 +87,17 @@ func InverseBytes(data []byte) []byte {
 	return invBytes
 }
 
-// GetSCCode returns the SC code from a given file
+// GetSCCode returns the SC code from a given file.
+//
+// This is a test-fixture helper, NOT a production code loader. Production
+// contract bytecode comes from chain state via runtimeContext.GetSCCode()
+// in vmhost/contexts/runtime.go, which has a proper (bytes, error) return.
+// All callers of this helper (testcommon/, hostCore/testInitializer.go,
+// scenario/exporter) panic when the returned slice is empty / unexpected,
+// so the silent read-error swallow here surfaces as a panic in the caller
+// rather than as silent wrong data. See issues/ISSUE-033.
 func GetSCCode(fileName string) []byte {
-	code, _ := ioutil.ReadFile(filepath.Clean(fileName))
+	code, _ := os.ReadFile(filepath.Clean(fileName))
 	return code
 }
 
@@ -123,11 +131,18 @@ type nilInterfaceChecker interface {
 	IsInterfaceNil() bool
 }
 
-// GetVMHost returns the vm Context from the vm context map
+// GetVMHost returns the VMHost associated with the wasmer instance
+// context backing the given pointer.
+//
+// ISSUE-013 (post-fix): the wasmer instance context's data slot now
+// holds a registry HANDLE (uint64), not a Go heap ADDRESS. See v1_4
+// vmhost/helpers.go GetVMHost for the full doc-comment.
+//
+// nolint
 func GetVMHost(vmHostPtr unsafe.Pointer) VMHost {
 	instCtx := wasmer.IntoInstanceContext(vmHostPtr)
-	var ptr = *(*uintptr)(instCtx.Data())
-	return *(*VMHost)(unsafe.Pointer(ptr))
+	handle := uint64(*(*uintptr)(instCtx.Data()))
+	return lookupVMHostOrPanic(handle)
 }
 
 // GetBlockchainContext returns the blockchain context

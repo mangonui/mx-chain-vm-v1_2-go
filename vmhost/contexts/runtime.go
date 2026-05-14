@@ -5,7 +5,6 @@ import (
 	"fmt"
 	builtinMath "math"
 	"math/big"
-	"unsafe"
 
 	logger "github.com/multiversx/mx-chain-logger-go"
 	vmcommon "github.com/multiversx/mx-chain-vm-common-go"
@@ -49,6 +48,21 @@ type runtimeContext struct {
 	warmInstance        wasmer.InstanceHandler
 
 	instanceBuilder vmhost.InstanceBuilder
+
+	// ISSUE-013: lazy-registered handle into globalVMHostRegistry.
+	// Reused across SetContextData call sites; not Released (v1_x has
+	// no explicit runtimeContext destroy method, leak bounded to ~1
+	// per process). See vmhost/vmHostRegistry.go.
+	hostHandle uint64
+}
+
+// hostRegistryHandle returns a stable registry handle for context.host,
+// registering on first call and reusing thereafter. ISSUE-013.
+func (context *runtimeContext) hostRegistryHandle() uintptr {
+	if context.hostHandle == 0 {
+		context.hostHandle = vmhost.RegisterVMHostHandle(context.host)
+	}
+	return uintptr(context.hostHandle)
 }
 
 // NewRuntimeContext creates a new runtimeContext
@@ -170,8 +184,10 @@ func (context *runtimeContext) makeInstanceFromCompiledCode(codeHash []byte, gas
 
 	context.instance = newInstance
 
-	hostReference := uintptr(unsafe.Pointer(&context.host))
-	context.instance.SetContextData(hostReference)
+	// ISSUE-013: pass a registry handle (uint64 cast to uintptr) rather
+	// than the address of the host interface field. See v1_4 runtime.go
+	// for the full rationale.
+	context.instance.SetContextData(context.hostRegistryHandle())
 	context.verifyCode = false
 
 	logRuntime.Trace("new instance created", "code", "cached compilation")
@@ -209,8 +225,10 @@ func (context *runtimeContext) makeInstanceFromContractByteCode(contract []byte,
 
 	context.saveCompiledCode(codeHash)
 
-	hostReference := uintptr(unsafe.Pointer(&context.host))
-	context.instance.SetContextData(hostReference)
+	// ISSUE-013: pass a registry handle (uint64 cast to uintptr) rather
+	// than the address of the host interface field. See v1_4 runtime.go
+	// for the full rationale.
+	context.instance.SetContextData(context.hostRegistryHandle())
 
 	if newCode {
 		err = context.VerifyContractCode()
@@ -826,13 +844,19 @@ func (context *runtimeContext) IsFunctionImported(name string) bool {
 }
 
 // MemLoad returns the contents from the given offset of the WASM memory.
+//
+// ISSUE-012: routes through MemoryHandler.ReadMemory so the wasm-linear-
+// memory alias never escapes this function. v1_2's distinctive
+// zero-padding behaviour is preserved verbatim — the result is always
+// `length` bytes, with the tail beyond memory length left as zeros
+// (callers in this codebase rely on this; v1_4 changed to return a
+// shorter slice but v1_2 must not).
 func (context *runtimeContext) MemLoad(offset int32, length int32) ([]byte, error) {
 	if length == 0 {
 		return []byte{}, nil
 	}
 
 	memory := context.instance.GetInstanceCtxMemory()
-	memoryView := memory.Data()
 	memoryLength := memory.Length()
 	requestedEnd := math.AddInt32(offset, length)
 
@@ -848,13 +872,19 @@ func (context *runtimeContext) MemLoad(offset int32, length int32) ([]byte, erro
 		return nil, fmt.Errorf("mem load: %w", vmhost.ErrNegativeLength)
 	}
 
-	result := make([]byte, length)
+	readableLen := uint32(length)
 	if isRequestedEndTooLarge {
-		copy(result, memoryView[offset:])
-	} else {
-		copy(result, memoryView[offset:requestedEnd])
+		readableLen = memoryLength - uint32(offset)
 	}
 
+	got, err := memory.ReadMemory(uint32(offset), readableLen)
+	if err != nil {
+		return nil, fmt.Errorf("mem load: %w", err)
+	}
+
+	// Preserve zero-padding to the requested length.
+	result := make([]byte, length)
+	copy(result, got)
 	return result, nil
 }
 
@@ -880,6 +910,12 @@ func (context *runtimeContext) MemLoadMultiple(offset int32, lengths []int32) ([
 }
 
 // MemStore stores the given data in the WASM memory at the given offset.
+//
+// ISSUE-012: routes through MemoryHandler.WriteMemory so the wasm-linear-
+// memory alias never escapes this function. WriteMemory acquires the
+// slice fresh internally on every call, removing the need for the
+// previous "fetch / Grow / re-fetch" dance and the foot-gun of a
+// future refactor forgetting the re-fetch.
 func (context *runtimeContext) MemStore(offset int32, data []byte) error {
 	dataLength := int32(len(data))
 	if dataLength == 0 {
@@ -887,7 +923,6 @@ func (context *runtimeContext) MemStore(offset int32, data []byte) error {
 	}
 
 	memory := context.instance.GetInstanceCtxMemory()
-	memoryView := memory.Data()
 	memoryLength := memory.Length()
 	requestedEnd := math.AddInt32(offset, dataLength)
 
@@ -903,7 +938,6 @@ func (context *runtimeContext) MemStore(offset int32, data []byte) error {
 			return err
 		}
 
-		memoryView = memory.Data()
 		memoryLength = memory.Length()
 	}
 
@@ -912,8 +946,7 @@ func (context *runtimeContext) MemStore(offset int32, data []byte) error {
 		return vmhost.ErrBadUpperBounds
 	}
 
-	copy(memoryView[offset:requestedEnd], data)
-	return nil
+	return memory.WriteMemory(uint32(offset), data)
 }
 
 // SetWarmInstance overwrites the warm Wasmer instance with the provided one.
