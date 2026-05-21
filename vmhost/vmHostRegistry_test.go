@@ -55,6 +55,23 @@ func TestVMHostRegistry_DoubleReleaseIsNoOp(t *testing.T) {
 	r.Release(id)
 }
 
+func TestReleaseVMHostHandle_ReleasesGlobalRegistryHandle(t *testing.T) {
+	t.Parallel()
+
+	id := RegisterVMHostHandle(newHostStub())
+	if got := globalVMHostRegistry.Lookup(id); got == nil {
+		t.Fatal("expected global registry lookup to find freshly registered host")
+	}
+
+	ReleaseVMHostHandle(id)
+	if got := globalVMHostRegistry.Lookup(id); got != nil {
+		t.Fatalf("expected released global handle to be absent, got %v", got)
+	}
+
+	// Must be idempotent.
+	ReleaseVMHostHandle(id)
+}
+
 func TestVMHostRegistry_HandlesNeverReused(t *testing.T) {
 	t.Parallel()
 

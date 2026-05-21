@@ -368,7 +368,21 @@ func (host *vmHost) RunSmartContractCall(input *vmcommon.ContractCallInput) (vmO
 
 // Close closes all internal instances of the vm
 func (host *vmHost) Close() error {
+	releaseRuntimeHostRegistryHandle(host.runtimeContext)
 	return nil
+}
+
+type runtimeHostRegistryHandleReleaser interface {
+	ReleaseHostRegistryHandle()
+}
+
+func releaseRuntimeHostRegistryHandle(runtimeContext interface{}) {
+	releaser, ok := runtimeContext.(runtimeHostRegistryHandleReleaser)
+	if !ok {
+		return
+	}
+
+	releaser.ReleaseHostRegistryHandle()
 }
 
 // TryCatch simulates a try/catch block using golang's recover() functionality

@@ -48,6 +48,12 @@ func RegisterVMHostHandle(host VMHost) uint64 {
 	return globalVMHostRegistry.Register(host)
 }
 
+// ReleaseVMHostHandle releases a previously registered VMHost handle.
+// It is idempotent; releasing an unknown or already-released handle is a no-op.
+func ReleaseVMHostHandle(handle uint64) {
+	globalVMHostRegistry.Release(handle)
+}
+
 func lookupVMHostOrPanic(handle uint64) VMHost {
 	host := globalVMHostRegistry.Lookup(handle)
 	if host == nil {

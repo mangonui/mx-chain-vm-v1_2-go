@@ -50,9 +50,8 @@ type runtimeContext struct {
 	instanceBuilder vmhost.InstanceBuilder
 
 	// ISSUE-013: lazy-registered handle into globalVMHostRegistry.
-	// Reused across SetContextData call sites; not Released (v1_x has
-	// no explicit runtimeContext destroy method, leak bounded to ~1
-	// per process). See vmhost/vmHostRegistry.go.
+	// Reused across SetContextData call sites and released by
+	// ReleaseHostRegistryHandle during host shutdown.
 	hostHandle uint64
 }
 
@@ -63,6 +62,17 @@ func (context *runtimeContext) hostRegistryHandle() uintptr {
 		context.hostHandle = vmhost.RegisterVMHostHandle(context.host)
 	}
 	return uintptr(context.hostHandle)
+}
+
+// ReleaseHostRegistryHandle releases the VMHost registry handle associated
+// with this runtime context. It is safe to call multiple times.
+func (context *runtimeContext) ReleaseHostRegistryHandle() {
+	if context.hostHandle == 0 {
+		return
+	}
+
+	vmhost.ReleaseVMHostHandle(context.hostHandle)
+	context.hostHandle = 0
 }
 
 // NewRuntimeContext creates a new runtimeContext
